@@ -138,6 +138,113 @@ public class AbstractDatabase {
         public long getMatches() {
             return matches;
         }
+        
+        @Override
+		public void processRow(ResultSet rs, int rowNum) throws SQLException {
+
+			String[] columannames = getColumnNames();
+			int[] types = getColumnTypes();
+			Map<String, Integer> columnMap = new HashMap<String, Integer>();
+			for (int i = 0; i < columannames.length; i++) {
+				columnMap.put(columannames[i], types[i]);
+			}
+
+			List<PrimaryKey> pk = buildPk(rs, columnMap);
+
+			int col = 0;
+
+			for (String columanname : columannames) {
+				String value = null;
+				int type = types[col];
+				col++;
+
+				if (type == Types.DATE || type == Types.TIME || type == Types.TIMESTAMP || type == Types.TIME_WITH_TIMEZONE || type == Types.TIMESTAMP_WITH_TIMEZONE) {
+					continue;
+				}
+
+				try {
+					value = String.valueOf(rs.getObject(columanname));
+				}
+				catch (Exception e) {
+					logger.error("Error while reading column value as string");
+					continue;
+				}
+
+				if (value == null) {
+					continue;
+				}
+
+				if (value.length() < 15) {
+					continue;
+				}
+				else if (value.length() > 16 && !value.matches("^.*[^a-zA-Z0-9].*$")) {
+					continue;
+				}
+
+				if (value.length() > 31) {
+					BatchId batchId = new BatchId();
+					if (batchId.detectMatch(value)) {
+						continue;
+					}
+				}
+
+				for (Detector detector : detectors) {
+					DetectionResult result = detector.detectMatch(value);
+					DatabaseField field = new DatabaseField(table, columanname);
+
+					if (result != null && result.includeResult() && result.getConfidence() != null && result.getConfidence() == Confidence.HIGH) {
+
+						FalsePositives.FalsePositiveType falsePositiveType = FalsePositives.isFalsePositive(result, field, rs);
+
+						report.report(field, result.getCardType(), result.getSample(), result.getSampleLine(), pk, result.getSequence(), falsePositiveType);
+
+						matches += 1;
+						break;
+					}
+				}
+			}
+		}
+        
+        private List<PrimaryKey> buildPk(ResultSet rs, Map<String, Integer> columnMap) throws SQLException {
+			List<PrimaryKey> pk = new ArrayList<PrimaryKey>();
+
+			if (table.getPkcolumns() != null) {
+				for (String column : table.getPkcolumns()) {
+					pk.add(new PrimaryKey(column, String.valueOf(rs.getString(column)), columnMap.get(column)));
+				}
+			}
+			else {
+				for (Entry<String, Integer> columnEntry : columnMap.entrySet()) {
+					try {
+						String value = String.valueOf(rs.getObject(columnEntry.getKey()));
+						if (value != null && value.length() <= 40) {
+							pk.add(new PrimaryKey(columnEntry.getKey(), value, columnEntry.getValue()));
+						}
+					}
+					catch (Exception e) {
+						logger.error("Error while reading column value as string");
+						continue;
+					}
+				}
+			}
+
+			return pk;
+		}
+	}
+    
+    private static class FakeSet<T> extends HashSet<T> {
+
+		private boolean alwaysReturn;
+
+		private FakeSet(boolean alwaysReturn) {
+			this.alwaysReturn = alwaysReturn;
+		}
+
+		@Override
+		public boolean contains(Object o) {
+			return alwaysReturn;
+		}
+	}
 
         @Override
         public void processRow(ResultSet rs, int rowNum) throws SQLException {
